@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import JarvisOrb from "@/components/JarvisOrb";
 import ChatInterface from "@/components/ChatInterface";
 import StatusPanel from "@/components/StatusPanel";
