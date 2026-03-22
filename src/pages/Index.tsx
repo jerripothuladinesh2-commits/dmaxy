@@ -41,7 +41,7 @@ const Index = () => {
       <main className="relative z-10 flex-1 flex flex-col items-center justify-center gap-6 px-4 w-full max-w-4xl py-8">
         {/* Orb */}
         <div className="animate-fade-in-up animate-float" style={{ animationDelay: '0.1s' }}>
-          <JarvisOrb isListening={isListening} size={240} />
+          <JarvisOrb isListening={isListening || isSpeaking} size={240} />
         </div>
 
         {/* Greeting */}
