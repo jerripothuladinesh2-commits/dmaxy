@@ -6,6 +6,9 @@ import StatusPanel from "@/components/StatusPanel";
 const Index = () => {
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const handleToggleListen = useCallback(() => {
+    setIsListening((v) => !v);
+  }, []);
 
   return (
     <div className="relative min-h-screen flex flex-col items-center overflow-hidden bg-background">
