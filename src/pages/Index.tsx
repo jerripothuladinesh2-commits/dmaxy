@@ -65,7 +65,7 @@ const Index = () => {
       {/* Footer */}
       <footer className="relative z-10 pb-4 text-center">
         <p className="text-[10px] font-display tracking-[0.25em] text-muted-foreground/50">
-          DINESH AI • v1.0.0 • ALL RIGHTS RESERVED
+          MAXY • v1.0.0 • ALL RIGHTS RESERVED
         </p>
       </footer>
     </div>
