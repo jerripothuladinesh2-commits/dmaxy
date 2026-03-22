@@ -309,6 +309,9 @@ const ChatInterface = ({
     [isProcessing, voiceEnabled, onSpeakingChange, chatHistory]
   );
 
+  // Keep ref in sync so speech recognition callback always has latest
+  useEffect(() => { handleSendRef.current = handleSendMessage; }, [handleSendMessage]);
+
   const handleSend = () => {
     handleSendMessage(input);
     setInput("");
