@@ -63,6 +63,9 @@ serve(async (req) => {
             ...messages,
           ],
           stream: true,
+          reasoning: {
+            effort: "medium",
+          },
         }),
       }
     );

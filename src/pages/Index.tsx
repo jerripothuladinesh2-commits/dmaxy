@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import JarvisOrb from "@/components/JarvisOrb";
 import ChatInterface from "@/components/ChatInterface";
 import StatusPanel from "@/components/StatusPanel";
@@ -6,6 +6,9 @@ import StatusPanel from "@/components/StatusPanel";
 const Index = () => {
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const handleToggleListen = useCallback(() => {
+    setIsListening((v) => !v);
+  }, []);
 
   return (
     <div className="relative min-h-screen flex flex-col items-center overflow-hidden bg-background">
@@ -59,7 +62,7 @@ const Index = () => {
 
         {/* Chat */}
         <div className="w-full max-w-lg animate-fade-in-up" style={{ animationDelay: '0.6s' }}>
-          <ChatInterface isListening={isListening} onToggleListen={() => setIsListening((v) => !v)} onSpeakingChange={setIsSpeaking} />
+          <ChatInterface isListening={isListening} onToggleListen={handleToggleListen} onSpeakingChange={setIsSpeaking} />
         </div>
       </main>
 
