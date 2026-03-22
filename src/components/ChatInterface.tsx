@@ -203,14 +203,38 @@ const ChatInterface = ({
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages]);
 
+  // Pause/resume mic when MAXY speaks
+  useEffect(() => {
+    isSpeakingRef.current = isSpeaking;
+    if (isSpeaking && recognitionRef.current) {
+      try { recognitionRef.current.stop(); } catch { /* ignore */ }
+    }
+  }, [isSpeaking]);
+
+  // Resume mic after speaking ends
+  useEffect(() => {
+    if (!isSpeaking && isListeningRef.current && !recognitionRef.current) {
+      // Small delay so audio output fully stops before mic restarts
+      const timer = setTimeout(() => {
+        if (isListeningRef.current && !isSpeakingRef.current) {
+          startRecognition();
+        }
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [isSpeaking]);
+
   // Speech Recognition
-  const startListening = useCallback(() => {
+  const startRecognition = useCallback(() => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) {
       alert("Speech recognition is not supported in this browser. Please use Chrome.");
       return;
     }
-    if (recognitionRef.current) recognitionRef.current.stop();
+    if (recognitionRef.current) {
+      try { recognitionRef.current.stop(); } catch { /* ignore */ }
+      recognitionRef.current = null;
+    }
 
     const recognition = new SpeechRecognition();
     recognition.continuous = true;
@@ -230,12 +254,21 @@ const ChatInterface = ({
       }
     };
     recognition.onerror = (e: any) => {
-      console.error("Speech error:", e.error);
-      if (e.error !== "no-speech") onToggleListen();
+      console.log("Speech error:", e.error);
+      // Only stop on fatal errors, NOT on aborted/no-speech
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+        onToggleListen();
+      }
     };
     recognition.onend = () => {
-      if (isListeningRef.current) {
-        try { recognition.start(); } catch { /* ignore */ }
+      recognitionRef.current = null;
+      // Auto-restart if still supposed to be listening and not speaking
+      if (isListeningRef.current && !isSpeakingRef.current) {
+        setTimeout(() => {
+          if (isListeningRef.current && !isSpeakingRef.current) {
+            startRecognition();
+          }
+        }, 300);
       }
     };
     recognition.start();
@@ -244,16 +277,16 @@ const ChatInterface = ({
 
   const stopListening = useCallback(() => {
     if (recognitionRef.current) {
-      recognitionRef.current.stop();
+      try { recognitionRef.current.stop(); } catch { /* ignore */ }
       recognitionRef.current = null;
     }
   }, []);
 
   useEffect(() => {
-    if (isListening) startListening();
-    else stopListening();
+    if (isListening && !isSpeaking) startRecognition();
+    else if (!isListening) stopListening();
     return () => stopListening();
-  }, [isListening, startListening, stopListening]);
+  }, [isListening]);
 
   const handleSendMessage = useCallback(
     (text: string) => {
