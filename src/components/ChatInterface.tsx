@@ -5,33 +5,33 @@ interface Message {
   id: string;
   role: "user" | "assistant";
   content: string;
-  timestamp: Date;
-}
-
-interface SpeechRecognitionEvent extends Event {
-  results: SpeechRecognitionResultList;
-  resultIndex: number;
 }
 
 const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/maxy-chat`;
 
+// ── Speech Synthesis ──
 const speak = (text: string, onStart?: () => void, onEnd?: () => void) => {
-  if (!("speechSynthesis" in window)) return;
+  if (!("speechSynthesis" in window)) { onEnd?.(); return; }
   window.speechSynthesis.cancel();
 
-  const utterance = new SpeechSynthesisUtterance(text);
-  const isTelugu = /[\u0C00-\u0C7F]/.test(text);
+  // Strip markdown for speech
+  const clean = text
+    .replace(/```[\s\S]*?```/g, " code block ")
+    .replace(/[*_~`#>]/g, "")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .trim();
+
+  const utterance = new SpeechSynthesisUtterance(clean);
+  const isTelugu = /[\u0C00-\u0C7F]/.test(clean);
   utterance.lang = isTelugu ? "te-IN" : "en-US";
-  utterance.rate = 1.0;
-  utterance.pitch = 0.9;
-  utterance.volume = 1;
+  utterance.rate = 1.05;
+  utterance.pitch = 0.95;
 
   const voices = window.speechSynthesis.getVoices();
-  const langPrefix = isTelugu ? "te" : "en";
-  const preferred = voices.find((v) => v.lang.startsWith(langPrefix) && v.name.includes("Google"));
-  const fallback = voices.find((v) => v.lang.startsWith(langPrefix));
-  if (preferred) utterance.voice = preferred;
-  else if (fallback) utterance.voice = fallback;
+  const lang = isTelugu ? "te" : "en";
+  const voice = voices.find(v => v.lang.startsWith(lang) && v.name.includes("Google"))
+    || voices.find(v => v.lang.startsWith(lang));
+  if (voice) utterance.voice = voice;
 
   utterance.onstart = () => onStart?.();
   utterance.onend = () => onEnd?.();
@@ -39,104 +39,78 @@ const speak = (text: string, onStart?: () => void, onEnd?: () => void) => {
   window.speechSynthesis.speak(utterance);
 };
 
-async function streamChat({
-  messages,
-  onDelta,
-  onDone,
-  onError,
-}: {
-  messages: { role: string; content: string }[];
-  onDelta: (text: string) => void;
-  onDone: () => void;
-  onError: (err: string) => void;
-}) {
+// ── Streaming fetch ──
+async function streamChat(
+  messages: { role: string; content: string }[],
+  onDelta: (text: string) => void,
+  onDone: (full: string) => void,
+  onError: (err: string) => void,
+) {
+  let attempts = 0;
   const maxRetries = 2;
-  let attempt = 0;
-  let resp: Response | null = null;
 
-  while (attempt <= maxRetries) {
-    resp = await fetch(CHAT_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-      },
-      body: JSON.stringify({ messages }),
-    });
+  while (attempts <= maxRetries) {
+    try {
+      const resp = await fetch(CHAT_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+        },
+        body: JSON.stringify({ messages }),
+      });
 
-    if (resp.status === 429 && attempt < maxRetries) {
-      attempt++;
-      await new Promise((r) => setTimeout(r, 3000 * attempt)); // wait 3s, then 6s
-      continue;
-    }
-    break;
-  }
-
-  if (!resp || !resp.ok) {
-    const data = await resp?.json().catch(() => ({})) || {};
-    onError(data.error || `Error ${resp?.status}`);
-    return;
-  }
-
-  if (!resp.body) {
-    onError("No response body");
-    return;
-  }
-
-  const reader = resp.body.getReader();
-  const decoder = new TextDecoder();
-  let textBuffer = "";
-  let streamDone = false;
-
-  while (!streamDone) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    textBuffer += decoder.decode(value, { stream: true });
-
-    let newlineIndex: number;
-    while ((newlineIndex = textBuffer.indexOf("\n")) !== -1) {
-      let line = textBuffer.slice(0, newlineIndex);
-      textBuffer = textBuffer.slice(newlineIndex + 1);
-      if (line.endsWith("\r")) line = line.slice(0, -1);
-      if (line.startsWith(":") || line.trim() === "") continue;
-      if (!line.startsWith("data: ")) continue;
-      const jsonStr = line.slice(6).trim();
-      if (jsonStr === "[DONE]") {
-        streamDone = true;
-        break;
+      if (resp.status === 429 && attempts < maxRetries) {
+        attempts++;
+        await new Promise(r => setTimeout(r, 3000 * attempts));
+        continue;
       }
-      try {
-        const parsed = JSON.parse(jsonStr);
-        const content = parsed.choices?.[0]?.delta?.content as string | undefined;
-        if (content) onDelta(content);
-      } catch {
-        textBuffer = line + "\n" + textBuffer;
-        break;
+
+      if (!resp.ok) {
+        const data = await resp.json().catch(() => ({}));
+        onError(data.error || `Error ${resp.status}`);
+        return;
       }
+
+      if (!resp.body) { onError("No response"); return; }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      let full = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+
+        let idx: number;
+        while ((idx = buf.indexOf("\n")) !== -1) {
+          let line = buf.slice(0, idx).replace(/\r$/, "");
+          buf = buf.slice(idx + 1);
+          if (!line.startsWith("data: ")) continue;
+          const json = line.slice(6).trim();
+          if (json === "[DONE]") { onDone(full); return; }
+          try {
+            const c = JSON.parse(json).choices?.[0]?.delta?.content;
+            if (c) { full += c; onDelta(c); }
+          } catch { /* partial chunk, skip */ }
+        }
+      }
+      onDone(full);
+      return;
+    } catch (e) {
+      if (attempts >= maxRetries) {
+        onError("Network error. Please check your connection.");
+        return;
+      }
+      attempts++;
+      await new Promise(r => setTimeout(r, 2000));
     }
   }
-
-  // Flush remaining
-  if (textBuffer.trim()) {
-    for (let raw of textBuffer.split("\n")) {
-      if (!raw) continue;
-      if (raw.endsWith("\r")) raw = raw.slice(0, -1);
-      if (!raw.startsWith("data: ")) continue;
-      const jsonStr = raw.slice(6).trim();
-      if (jsonStr === "[DONE]") continue;
-      try {
-        const parsed = JSON.parse(jsonStr);
-        const content = parsed.choices?.[0]?.delta?.content as string | undefined;
-        if (content) onDelta(content);
-      } catch {
-        /* skip */
-      }
-    }
-  }
-
-  onDone();
 }
 
+// ── Component ──
 const ChatInterface = ({
   isListening,
   onToggleListen,
@@ -147,208 +121,185 @@ const ChatInterface = ({
   onSpeakingChange?: (speaking: boolean) => void;
 }) => {
   const [messages, setMessages] = useState<Message[]>([]);
-  const [chatHistory, setChatHistory] = useState<{ role: string; content: string }[]>([]);
+  const [history, setHistory] = useState<{ role: string; content: string }[]>([]);
   const [input, setInput] = useState("");
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [isProcessing, setIsProcessing] = useState(false);
+
   const scrollRef = useRef<HTMLDivElement>(null);
-  const recognitionRef = useRef<any>(null);
+  const recRef = useRef<any>(null);
   const hasGreeted = useRef(false);
-  const isListeningRef = useRef(isListening);
-  const isSpeakingRef = useRef(false);
-  const handleSendRef = useRef<(text: string) => void>(() => {});
+  // Use refs for values needed inside recognition callbacks
+  const stateRef = useRef({ isListening: false, isSpeaking: false });
 
-  // Keep refs in sync
-  useEffect(() => { isListeningRef.current = isListening; }, [isListening]);
+  useEffect(() => { stateRef.current.isListening = isListening; }, [isListening]);
+  useEffect(() => { stateRef.current.isSpeaking = isSpeaking; }, [isSpeaking]);
 
+  // Load voices
   useEffect(() => {
-    if ("speechSynthesis" in window) {
-      window.speechSynthesis.getVoices();
-      window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
-    }
+    speechSynthesis?.getVoices();
+    if (speechSynthesis) speechSynthesis.onvoiceschanged = () => speechSynthesis.getVoices();
   }, []);
 
-  // Initial greeting - local, no AI call to avoid rate limits
-  useEffect(() => {
-    if (hasGreeted.current) return;
-    hasGreeted.current = true;
-
-    const greetings = [
-      "Good to see you, Boss DINESH. All systems online and operational. MAXY is at your service.",
-      "నమస్కారం DINESH sir! MAXY సిద్ధంగా ఉంది. How can I assist you today?",
-      "Welcome back, Boss DINESH. MAXY intelligence systems fully loaded. Ready for your command.",
-    ];
-    const greeting = greetings[Math.floor(Math.random() * greetings.length)];
-
-    setMessages([{
-      id: "welcome",
-      role: "assistant",
-      content: greeting,
-      timestamp: new Date(),
-    }]);
-
-    setTimeout(() => {
-      if (voiceEnabled) {
-        speak(
-          greeting,
-          () => { setIsSpeaking(true); onSpeakingChange?.(true); },
-          () => { setIsSpeaking(false); onSpeakingChange?.(false); }
-        );
-      }
-    }, 800);
-  }, []);
-
+  // Auto scroll
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages]);
 
-  // Pause/resume mic when MAXY speaks
+  // ── Greeting (local, no API call) ──
   useEffect(() => {
-    isSpeakingRef.current = isSpeaking;
-    if (isSpeaking && recognitionRef.current) {
-      try { recognitionRef.current.stop(); } catch { /* ignore */ }
-    }
-  }, [isSpeaking]);
+    if (hasGreeted.current) return;
+    hasGreeted.current = true;
+    const greetings = [
+      "Systems online, Boss DINESH. MAXY at your service. What do you need?",
+      "నమస్కారం Boss DINESH! MAXY ready. Ask me anything.",
+      "All systems green, Boss. MAXY intelligence fully loaded. Let's get to work.",
+    ];
+    const g = greetings[Math.floor(Math.random() * greetings.length)];
+    setMessages([{ id: "welcome", role: "assistant", content: g }]);
+    setTimeout(() => {
+      speak(g,
+        () => { setIsSpeaking(true); onSpeakingChange?.(true); },
+        () => { setIsSpeaking(false); onSpeakingChange?.(false); }
+      );
+    }, 600);
+  }, []);
 
-  // Resume mic after speaking ends
-  useEffect(() => {
-    if (!isSpeaking && isListeningRef.current && !recognitionRef.current) {
-      // Small delay so audio output fully stops before mic restarts
-      const timer = setTimeout(() => {
-        if (isListeningRef.current && !isSpeakingRef.current) {
-          startRecognition();
+  // ── Send message to AI ──
+  const sendToAI = useCallback((text: string) => {
+    if (!text.trim() || isProcessing) return;
+    const uid = Date.now().toString();
+    const aid = uid + "_a";
+
+    const userMsg: Message = { id: uid, role: "user", content: text.trim() };
+    const asstMsg: Message = { id: aid, role: "assistant", content: "" };
+
+    setMessages(prev => [...prev, userMsg, asstMsg]);
+    setIsProcessing(true);
+
+    const newHist = [...history, { role: "user", content: text.trim() }];
+
+    streamChat(
+      newHist,
+      (chunk) => {
+        asstMsg.content += chunk;
+        setMessages(prev => prev.map(m => m.id === aid ? { ...m, content: asstMsg.content } : m));
+      },
+      (full) => {
+        setIsProcessing(false);
+        setHistory([...newHist, { role: "assistant", content: full }]);
+        if (voiceEnabled && full) {
+          speak(full,
+            () => { setIsSpeaking(true); onSpeakingChange?.(true); },
+            () => { setIsSpeaking(false); onSpeakingChange?.(false); }
+          );
         }
-      }, 500);
-      return () => clearTimeout(timer);
-    }
-  }, [isSpeaking]);
-
-  // Speech Recognition
-  const startRecognition = useCallback(() => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      alert("Speech recognition is not supported in this browser. Please use Chrome.");
-      return;
-    }
-    if (recognitionRef.current) {
-      try { recognitionRef.current.stop(); } catch { /* ignore */ }
-      recognitionRef.current = null;
-    }
-
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.lang = "en-US";
-    recognition.maxAlternatives = 1;
-
-    recognition.onresult = (event: SpeechRecognitionEvent) => {
-      let transcript = "";
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        transcript += event.results[i][0].transcript;
+      },
+      (err) => {
+        setMessages(prev => prev.map(m =>
+          m.id === aid ? { ...m, content: `Sorry Boss, hit a snag: ${err}` } : m
+        ));
+        setIsProcessing(false);
       }
-      setInput(transcript);
-      if (event.results[event.results.length - 1].isFinal) {
-        handleSendRef.current(transcript.trim());
+    );
+  }, [isProcessing, voiceEnabled, onSpeakingChange, history]);
+
+  // Keep a ref so recognition callbacks always call the latest version
+  const sendRef = useRef(sendToAI);
+  useEffect(() => { sendRef.current = sendToAI; }, [sendToAI]);
+
+  // ── Speech Recognition ──
+  const startMic = useCallback(() => {
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) return;
+
+    // Stop existing
+    if (recRef.current) {
+      try { recRef.current.abort(); } catch {}
+      recRef.current = null;
+    }
+
+    const rec = new SR();
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.lang = "en-US";
+
+    rec.onresult = (e: any) => {
+      let text = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        text += e.results[i][0].transcript;
+      }
+      setInput(text);
+      if (e.results[e.results.length - 1].isFinal) {
         setInput("");
+        sendRef.current(text.trim());
       }
     };
-    recognition.onerror = (e: any) => {
-      console.log("Speech error:", e.error);
-      // Only stop on fatal errors, NOT on aborted/no-speech
+
+    rec.onerror = (e: any) => {
+      // Ignore non-fatal errors (aborted, no-speech, network)
       if (e.error === "not-allowed" || e.error === "service-not-allowed") {
         onToggleListen();
       }
+      // All other errors: let onend handle restart
     };
-    recognition.onend = () => {
-      recognitionRef.current = null;
-      // Auto-restart if still supposed to be listening and not speaking
-      if (isListeningRef.current && !isSpeakingRef.current) {
+
+    rec.onend = () => {
+      recRef.current = null;
+      // Restart if still supposed to be listening and not speaking
+      if (stateRef.current.isListening && !stateRef.current.isSpeaking) {
         setTimeout(() => {
-          if (isListeningRef.current && !isSpeakingRef.current) {
-            startRecognition();
+          if (stateRef.current.isListening && !stateRef.current.isSpeaking) {
+            startMic();
           }
-        }, 300);
+        }, 500);
       }
     };
-    recognition.start();
-    recognitionRef.current = recognition;
+
+    try {
+      rec.start();
+      recRef.current = rec;
+    } catch {}
   }, [onToggleListen]);
 
-  const stopListening = useCallback(() => {
-    if (recognitionRef.current) {
-      try { recognitionRef.current.stop(); } catch { /* ignore */ }
-      recognitionRef.current = null;
+  const stopMic = useCallback(() => {
+    if (recRef.current) {
+      try { recRef.current.abort(); } catch {}
+      recRef.current = null;
     }
   }, []);
 
+  // Start/stop mic based on isListening
   useEffect(() => {
-    if (isListening && !isSpeaking) startRecognition();
-    else if (!isListening) stopListening();
-    return () => stopListening();
+    if (isListening && !isSpeaking) {
+      startMic();
+    } else {
+      stopMic();
+    }
+    return () => stopMic();
   }, [isListening]);
 
-  const handleSendMessage = useCallback(
-    (text: string) => {
-      if (!text.trim() || isProcessing) return;
-
-      const userMsg: Message = {
-        id: Date.now().toString(),
-        role: "user",
-        content: text.trim(),
-        timestamp: new Date(),
-      };
-      const assistantMsg: Message = {
-        id: (Date.now() + 1).toString(),
-        role: "assistant",
-        content: "",
-        timestamp: new Date(),
-      };
-
-      setMessages((prev) => [...prev, userMsg, assistantMsg]);
-      setIsProcessing(true);
-
-      const newHistory = [...chatHistory, { role: "user", content: text.trim() }];
-      let fullResponse = "";
-
-      streamChat({
-        messages: newHistory,
-        onDelta: (chunk) => {
-          fullResponse += chunk;
-          setMessages((prev) =>
-            prev.map((m) => (m.id === assistantMsg.id ? { ...m, content: fullResponse } : m))
-          );
-        },
-        onDone: () => {
-          setIsProcessing(false);
-          setChatHistory([...newHistory, { role: "assistant", content: fullResponse }]);
-          if (voiceEnabled && fullResponse) {
-            speak(
-              fullResponse,
-              () => { setIsSpeaking(true); onSpeakingChange?.(true); },
-              () => { setIsSpeaking(false); onSpeakingChange?.(false); }
-            );
-          }
-        },
-        onError: (err) => {
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantMsg.id ? { ...m, content: `Apologies Boss, something went wrong: ${err}` } : m
-            )
-          );
-          setIsProcessing(false);
-        },
-      });
-    },
-    [isProcessing, voiceEnabled, onSpeakingChange, chatHistory]
-  );
-
-  // Keep ref in sync so speech recognition callback always has latest
-  useEffect(() => { handleSendRef.current = handleSendMessage; }, [handleSendMessage]);
+  // Pause mic while speaking, resume after
+  useEffect(() => {
+    if (isSpeaking) {
+      stopMic();
+    } else if (isListening) {
+      // Delay restart so audio output clears
+      const t = setTimeout(() => {
+        if (stateRef.current.isListening && !stateRef.current.isSpeaking) {
+          startMic();
+        }
+      }, 800);
+      return () => clearTimeout(t);
+    }
+  }, [isSpeaking]);
 
   const handleSend = () => {
-    handleSendMessage(input);
-    setInput("");
+    if (input.trim()) {
+      sendToAI(input.trim());
+      setInput("");
+    }
   };
 
   const toggleVoice = () => {
@@ -357,90 +308,67 @@ const ChatInterface = ({
       setIsSpeaking(false);
       onSpeakingChange?.(false);
     }
-    setVoiceEnabled((v) => !v);
+    setVoiceEnabled(v => !v);
   };
 
   return (
     <div className="flex flex-col h-full max-h-[480px] w-full max-w-lg">
-      {/* Voice status bar */}
-      <div className="flex items-center justify-between px-3 py-1.5 mb-2">
-        <div className="flex items-center gap-2">
-          {isListening && (
+      {/* Status bar */}
+      <div className="flex items-center justify-between px-3 py-1.5 mb-1">
+        <div className="flex items-center gap-2 min-h-[20px]">
+          {isListening && !isSpeaking && (
             <div className="flex items-center gap-1.5 animate-fade-in-up">
               <span className="flex gap-0.5">
-                {[0, 1, 2, 3, 4].map((i) => (
-                  <span
-                    key={i}
-                    className="w-1 bg-primary rounded-full"
-                    style={{
-                      height: `${8 + Math.random() * 12}px`,
-                      animation: `typing-dot 0.8s ${i * 0.15}s ease-in-out infinite`,
-                    }}
-                  />
+                {[0,1,2,3,4].map(i => (
+                  <span key={i} className="w-1 bg-primary rounded-full"
+                    style={{ height: `${8 + Math.random() * 12}px`, animation: `typing-dot 0.8s ${i * 0.15}s ease-in-out infinite` }} />
                 ))}
               </span>
-              <span className="text-[10px] font-display tracking-wider text-primary">LISTENING...</span>
+              <span className="text-[10px] font-display tracking-wider text-primary">LISTENING</span>
             </div>
           )}
           {isSpeaking && (
             <div className="flex items-center gap-1.5 animate-fade-in-up">
               <span className="flex gap-0.5">
-                {[0, 1, 2, 3, 4].map((i) => (
-                  <span
-                    key={i}
-                    className="w-1 bg-glow-warm rounded-full"
-                    style={{
-                      height: `${8 + Math.random() * 12}px`,
-                      animation: `typing-dot 0.6s ${i * 0.1}s ease-in-out infinite`,
-                    }}
-                  />
+                {[0,1,2,3,4].map(i => (
+                  <span key={i} className="w-1 bg-glow-warm rounded-full"
+                    style={{ height: `${8 + Math.random() * 12}px`, animation: `typing-dot 0.6s ${i * 0.1}s ease-in-out infinite` }} />
                 ))}
               </span>
-              <span className="text-[10px] font-display tracking-wider text-glow-warm">MAXY SPEAKING...</span>
+              <span className="text-[10px] font-display tracking-wider text-glow-warm">MAXY SPEAKING</span>
             </div>
           )}
-          {isProcessing && !isSpeaking && (
+          {isProcessing && !isSpeaking && !isListening && (
             <span className="text-[10px] font-display tracking-wider text-muted-foreground animate-pulse">THINKING...</span>
           )}
         </div>
-        <button
-          onClick={toggleVoice}
-          className={`p-1.5 rounded-lg transition-all duration-200 active:scale-95 ${
-            voiceEnabled ? "text-primary" : "text-muted-foreground"
-          }`}
-          title={voiceEnabled ? "Mute MAXY" : "Unmute MAXY"}
-        >
+        <button onClick={toggleVoice}
+          className={`p-1.5 rounded-lg transition-all duration-200 active:scale-95 ${voiceEnabled ? "text-primary" : "text-muted-foreground"}`}
+          title={voiceEnabled ? "Mute MAXY" : "Unmute MAXY"}>
           {voiceEnabled ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
         </button>
       </div>
 
       {/* Messages */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto space-y-3 px-2 py-4 scrollbar-thin">
-        {messages.map((msg, i) => (
-          <div
-            key={msg.id}
-            className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"} animate-fade-in-up`}
-            style={{ animationDelay: `${Math.min(i * 0.05, 0.3)}s` }}
-          >
-            <div
-              className={`max-w-[85%] px-4 py-2.5 rounded-2xl text-sm leading-relaxed font-body ${
-                msg.role === "user"
-                  ? "bg-primary/20 border border-primary/30 text-foreground"
-                  : "glass-surface text-foreground"
-              }`}
-            >
+      <div ref={scrollRef} className="flex-1 overflow-y-auto space-y-3 px-2 py-3">
+        {messages.map((msg) => (
+          <div key={msg.id} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"} animate-fade-in-up`}>
+            <div className={`max-w-[85%] px-4 py-2.5 rounded-2xl text-sm leading-relaxed font-body ${
+              msg.role === "user"
+                ? "bg-primary/20 border border-primary/30 text-foreground"
+                : "glass-surface text-foreground"
+            }`}>
               {msg.role === "assistant" && (
-                <span className="text-[10px] font-display tracking-widest text-primary/70 block mb-1">
-                  M.A.X.Y
-                </span>
+                <span className="text-[10px] font-display tracking-widest text-primary/70 block mb-1">M.A.X.Y</span>
               )}
-              {msg.content || (isProcessing && msg.role === "assistant" ? (
+              {msg.content || (
                 <span className="flex gap-1">
-                  {[0, 1, 2].map((i) => (
-                    <span key={i} className="w-1.5 h-1.5 rounded-full bg-primary/50" style={{ animation: `typing-dot 1s ${i * 0.2}s ease-in-out infinite` }} />
+                  {[0,1,2].map(i => (
+                    <span key={i} className="w-1.5 h-1.5 rounded-full bg-primary/50"
+                      style={{ animation: `typing-dot 1s ${i * 0.2}s ease-in-out infinite` }} />
                   ))}
                 </span>
-              ) : null)}
+              )}
             </div>
           </div>
         ))}
@@ -448,31 +376,26 @@ const ChatInterface = ({
 
       {/* Input */}
       <div className="glass-surface rounded-2xl p-2 flex items-center gap-2 mt-2">
-        <button
-          onClick={onToggleListen}
+        <button onClick={onToggleListen}
           className={`p-2.5 rounded-xl transition-all duration-300 active:scale-95 ${
             isListening
               ? "bg-primary/20 text-primary box-glow-strong"
               : "text-muted-foreground hover:text-foreground hover:bg-secondary"
-          }`}
-          title={isListening ? "Stop listening" : "Start listening"}
-        >
+          }`}>
           {isListening ? <Mic className="w-5 h-5 animate-pulse" /> : <MicOff className="w-5 h-5" />}
         </button>
 
         <input
           value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && handleSend()}
-          placeholder={isListening ? "Listening to you, Boss..." : "Speak or type a command, Boss..."}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && handleSend()}
+          placeholder={isListening ? "Listening, Boss..." : "Type a command, Boss..."}
           className="flex-1 bg-transparent text-sm text-foreground placeholder:text-muted-foreground outline-none font-body"
         />
 
-        <button
-          onClick={handleSend}
+        <button onClick={handleSend}
           disabled={!input.trim() || isProcessing}
-          className="p-2.5 rounded-xl text-primary hover:bg-primary/10 transition-all duration-200 active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed"
-        >
+          className="p-2.5 rounded-xl text-primary hover:bg-primary/10 transition-all duration-200 active:scale-95 disabled:opacity-30 disabled:cursor-not-allowed">
           <Send className="w-5 h-5" />
         </button>
       </div>
