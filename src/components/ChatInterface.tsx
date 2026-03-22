@@ -50,18 +50,31 @@ async function streamChat({
   onDone: () => void;
   onError: (err: string) => void;
 }) {
-  const resp = await fetch(CHAT_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-    },
-    body: JSON.stringify({ messages }),
-  });
+  const maxRetries = 2;
+  let attempt = 0;
+  let resp: Response | null = null;
 
-  if (!resp.ok) {
-    const data = await resp.json().catch(() => ({}));
-    onError(data.error || `Error ${resp.status}`);
+  while (attempt <= maxRetries) {
+    resp = await fetch(CHAT_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+      },
+      body: JSON.stringify({ messages }),
+    });
+
+    if (resp.status === 429 && attempt < maxRetries) {
+      attempt++;
+      await new Promise((r) => setTimeout(r, 3000 * attempt)); // wait 3s, then 6s
+      continue;
+    }
+    break;
+  }
+
+  if (!resp || !resp.ok) {
+    const data = await resp?.json().catch(() => ({})) || {};
+    onError(data.error || `Error ${resp?.status}`);
     return;
   }
 
@@ -150,43 +163,34 @@ const ChatInterface = ({
     }
   }, []);
 
-  // Initial greeting - ask MAXY to greet
+  // Initial greeting - local, no AI call to avoid rate limits
   useEffect(() => {
     if (hasGreeted.current) return;
     hasGreeted.current = true;
 
-    const greetingMsg: Message = {
+    const greetings = [
+      "Good to see you, Boss DINESH. All systems online and operational. MAXY is at your service.",
+      "నమస్కారం DINESH sir! MAXY సిద్ధంగా ఉంది. How can I assist you today?",
+      "Welcome back, Boss DINESH. MAXY intelligence systems fully loaded. Ready for your command.",
+    ];
+    const greeting = greetings[Math.floor(Math.random() * greetings.length)];
+
+    setMessages([{
       id: "welcome",
       role: "assistant",
-      content: "",
+      content: greeting,
       timestamp: new Date(),
-    };
-    setMessages([greetingMsg]);
-    setIsProcessing(true);
+    }]);
 
-    let fullText = "";
-    streamChat({
-      messages: [{ role: "user", content: "Greet your boss DINESH. Keep it short and cool, like JARVIS. You can mix Telugu and English." }],
-      onDelta: (chunk) => {
-        fullText += chunk;
-        setMessages([{ ...greetingMsg, content: fullText }]);
-      },
-      onDone: () => {
-        setIsProcessing(false);
-        setChatHistory([{ role: "assistant", content: fullText }]);
-        if (voiceEnabled) {
-          speak(
-            fullText,
-            () => { setIsSpeaking(true); onSpeakingChange?.(true); },
-            () => { setIsSpeaking(false); onSpeakingChange?.(false); }
-          );
-        }
-      },
-      onError: (err) => {
-        setMessages([{ ...greetingMsg, content: `Systems online, Boss DINESH. MAXY at your service. (${err})` }]);
-        setIsProcessing(false);
-      },
-    });
+    setTimeout(() => {
+      if (voiceEnabled) {
+        speak(
+          greeting,
+          () => { setIsSpeaking(true); onSpeakingChange?.(true); },
+          () => { setIsSpeaking(false); onSpeakingChange?.(false); }
+        );
+      }
+    }, 800);
   }, []);
 
   useEffect(() => {
