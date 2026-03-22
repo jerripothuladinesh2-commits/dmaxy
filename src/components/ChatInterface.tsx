@@ -8,102 +8,121 @@ interface Message {
   timestamp: Date;
 }
 
-// Extend window for SpeechRecognition
 interface SpeechRecognitionEvent extends Event {
   results: SpeechRecognitionResultList;
   resultIndex: number;
 }
 
-const GREETINGS = [
-  "Good to see you, Boss DINESH. All systems are online and operational.",
-  "నమస్కారం DINESH sir. మీ సేవలో సిద్ధంగా ఉన్నాను.",
-  "Welcome back, DINESH. How may I assist you today?",
-];
+const CHAT_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/maxy-chat`;
 
-const RESPONSES: Record<string, string[]> = {
-  hello: [
-    "Hello Boss DINESH! MAXY is at your service.",
-    "Hey Boss! All systems operational. What can I do for you?",
-  ],
-  namaste: [
-    "నమస్కారం Boss DINESH! చెప్పండి, ఏం చేయమంటారు?",
-    "నమస్తే sir! MAXY సిద్ధంగా ఉంది.",
-  ],
-  "how are you": [
-    "I'm running at optimal capacity, Boss. All cores engaged and ready.",
-    "Systems are perfect, sir. More importantly, how can I help you?",
-  ],
-  time: [
-    `The current time is ${new Date().toLocaleTimeString("en-IN")}. Anything else, Boss?`,
-  ],
-  "who are you": [
-    "I am MAXY, your personal AI intelligence system. Built exclusively for Boss DINESH. I can understand Telugu and English, and I'm always ready to assist you.",
-  ],
-  "your name": [
-    "My name is MAXY, sir. Your personal AI assistant, always at your command.",
-  ],
-  thanks: [
-    "Always a pleasure, Boss DINESH.",
-    "You're welcome, sir. That's what I'm here for.",
-  ],
-  default: [
-    "Understood, Boss DINESH. Processing your request now.",
-    "Affirmative. I'll take care of that right away, sir.",
-    "అర్థమైంది DINESH sir. వెంటనే చేస్తాను.",
-    "Running analysis. Results will be ready momentarily.",
-    "Of course, Boss. Consider it done.",
-    "Roger that. MAXY is on it, sir.",
-  ],
-};
-
-const getResponse = (input: string): string => {
-  const lower = input.toLowerCase();
-  for (const [key, responses] of Object.entries(RESPONSES)) {
-    if (key !== "default" && lower.includes(key)) {
-      return responses[Math.floor(Math.random() * responses.length)];
-    }
-  }
-  // Check Telugu greetings
-  if (lower.includes("నమస్") || lower.includes("ఏం") || lower.includes("ఎలా")) {
-    const teluguResponses = [
-      "అర్థమైంది Boss DINESH. MAXY మీ కోసం పని చేస్తుంది.",
-      "చెప్పండి sir, MAXY సిద్ధంగా ఉంది.",
-      "అవును Boss, వెంటనే చేస్తాను.",
-    ];
-    return teluguResponses[Math.floor(Math.random() * teluguResponses.length)];
-  }
-  return RESPONSES.default[Math.floor(Math.random() * RESPONSES.default.length)];
-};
-
-// Speech synthesis helper
 const speak = (text: string, onStart?: () => void, onEnd?: () => void) => {
   if (!("speechSynthesis" in window)) return;
-  
-  window.speechSynthesis.cancel(); // Cancel any ongoing speech
+  window.speechSynthesis.cancel();
 
   const utterance = new SpeechSynthesisUtterance(text);
-  
-  // Detect if text contains Telugu characters
   const isTelugu = /[\u0C00-\u0C7F]/.test(text);
   utterance.lang = isTelugu ? "te-IN" : "en-US";
   utterance.rate = 1.0;
   utterance.pitch = 0.9;
   utterance.volume = 1;
 
-  // Try to find a good voice
   const voices = window.speechSynthesis.getVoices();
   const langPrefix = isTelugu ? "te" : "en";
-  const preferred = voices.find(v => v.lang.startsWith(langPrefix) && v.name.includes("Google"));
-  const fallback = voices.find(v => v.lang.startsWith(langPrefix));
+  const preferred = voices.find((v) => v.lang.startsWith(langPrefix) && v.name.includes("Google"));
+  const fallback = voices.find((v) => v.lang.startsWith(langPrefix));
   if (preferred) utterance.voice = preferred;
   else if (fallback) utterance.voice = fallback;
 
   utterance.onstart = () => onStart?.();
   utterance.onend = () => onEnd?.();
   utterance.onerror = () => onEnd?.();
-
   window.speechSynthesis.speak(utterance);
 };
+
+async function streamChat({
+  messages,
+  onDelta,
+  onDone,
+  onError,
+}: {
+  messages: { role: string; content: string }[];
+  onDelta: (text: string) => void;
+  onDone: () => void;
+  onError: (err: string) => void;
+}) {
+  const resp = await fetch(CHAT_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+    },
+    body: JSON.stringify({ messages }),
+  });
+
+  if (!resp.ok) {
+    const data = await resp.json().catch(() => ({}));
+    onError(data.error || `Error ${resp.status}`);
+    return;
+  }
+
+  if (!resp.body) {
+    onError("No response body");
+    return;
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let textBuffer = "";
+  let streamDone = false;
+
+  while (!streamDone) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    textBuffer += decoder.decode(value, { stream: true });
+
+    let newlineIndex: number;
+    while ((newlineIndex = textBuffer.indexOf("\n")) !== -1) {
+      let line = textBuffer.slice(0, newlineIndex);
+      textBuffer = textBuffer.slice(newlineIndex + 1);
+      if (line.endsWith("\r")) line = line.slice(0, -1);
+      if (line.startsWith(":") || line.trim() === "") continue;
+      if (!line.startsWith("data: ")) continue;
+      const jsonStr = line.slice(6).trim();
+      if (jsonStr === "[DONE]") {
+        streamDone = true;
+        break;
+      }
+      try {
+        const parsed = JSON.parse(jsonStr);
+        const content = parsed.choices?.[0]?.delta?.content as string | undefined;
+        if (content) onDelta(content);
+      } catch {
+        textBuffer = line + "\n" + textBuffer;
+        break;
+      }
+    }
+  }
+
+  // Flush remaining
+  if (textBuffer.trim()) {
+    for (let raw of textBuffer.split("\n")) {
+      if (!raw) continue;
+      if (raw.endsWith("\r")) raw = raw.slice(0, -1);
+      if (!raw.startsWith("data: ")) continue;
+      const jsonStr = raw.slice(6).trim();
+      if (jsonStr === "[DONE]") continue;
+      try {
+        const parsed = JSON.parse(jsonStr);
+        const content = parsed.choices?.[0]?.delta?.content as string | undefined;
+        if (content) onDelta(content);
+      } catch {
+        /* skip */
+      }
+    }
+  }
+
+  onDone();
+}
 
 const ChatInterface = ({
   isListening,
@@ -115,6 +134,7 @@ const ChatInterface = ({
   onSpeakingChange?: (speaking: boolean) => void;
 }) => {
   const [messages, setMessages] = useState<Message[]>([]);
+  const [chatHistory, setChatHistory] = useState<{ role: string; content: string }[]>([]);
   const [input, setInput] = useState("");
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
@@ -123,60 +143,69 @@ const ChatInterface = ({
   const recognitionRef = useRef<any>(null);
   const hasGreeted = useRef(false);
 
-  // Load voices
   useEffect(() => {
     if ("speechSynthesis" in window) {
       window.speechSynthesis.getVoices();
-      window.speechSynthesis.onvoiceschanged = () => {
-        window.speechSynthesis.getVoices();
-      };
+      window.speechSynthesis.onvoiceschanged = () => window.speechSynthesis.getVoices();
     }
   }, []);
 
-  // Initial greeting with voice
+  // Initial greeting - ask MAXY to greet
   useEffect(() => {
     if (hasGreeted.current) return;
     hasGreeted.current = true;
-    const greeting = GREETINGS[Math.floor(Math.random() * GREETINGS.length)];
-    const welcomeMsg: Message = {
+
+    const greetingMsg: Message = {
       id: "welcome",
       role: "assistant",
-      content: greeting,
+      content: "",
       timestamp: new Date(),
     };
-    setMessages([welcomeMsg]);
+    setMessages([greetingMsg]);
+    setIsProcessing(true);
 
-    // Speak greeting after a short delay
-    setTimeout(() => {
-      speak(
-        greeting,
-        () => { setIsSpeaking(true); onSpeakingChange?.(true); },
-        () => { setIsSpeaking(false); onSpeakingChange?.(false); }
-      );
-    }, 800);
-  }, [onSpeakingChange]);
+    let fullText = "";
+    streamChat({
+      messages: [{ role: "user", content: "Greet your boss DINESH. Keep it short and cool, like JARVIS. You can mix Telugu and English." }],
+      onDelta: (chunk) => {
+        fullText += chunk;
+        setMessages([{ ...greetingMsg, content: fullText }]);
+      },
+      onDone: () => {
+        setIsProcessing(false);
+        setChatHistory([{ role: "assistant", content: fullText }]);
+        if (voiceEnabled) {
+          speak(
+            fullText,
+            () => { setIsSpeaking(true); onSpeakingChange?.(true); },
+            () => { setIsSpeaking(false); onSpeakingChange?.(false); }
+          );
+        }
+      },
+      onError: (err) => {
+        setMessages([{ ...greetingMsg, content: `Systems online, Boss DINESH. MAXY at your service. (${err})` }]);
+        setIsProcessing(false);
+      },
+    });
+  }, []);
 
-  // Auto scroll
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages]);
 
-  // Speech Recognition setup
+  // Speech Recognition
   const startListening = useCallback(() => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) {
       alert("Speech recognition is not supported in this browser. Please use Chrome.");
       return;
     }
-
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
-    }
+    if (recognitionRef.current) recognitionRef.current.stop();
 
     const recognition = new SpeechRecognition();
     recognition.continuous = false;
     recognition.interimResults = true;
-    recognition.lang = "en-US"; // Will also pick up Telugu in practice
+    recognition.lang = "en-US";
     recognition.maxAlternatives = 1;
 
     recognition.onresult = (event: SpeechRecognitionEvent) => {
@@ -185,26 +214,17 @@ const ChatInterface = ({
         transcript += event.results[i][0].transcript;
       }
       setInput(transcript);
-
-      // If final result, auto-send
       if (event.results[event.results.length - 1].isFinal) {
         handleSendMessage(transcript.trim());
         setInput("");
       }
     };
-
-    recognition.onerror = (event: any) => {
-      console.error("Speech recognition error:", event.error);
-      onToggleListen();
-    };
-
+    recognition.onerror = () => onToggleListen();
     recognition.onend = () => {
-      // If still supposed to be listening, restart
       if (isListening) {
-        try { recognition.start(); } catch (e) { /* ignore */ }
+        try { recognition.start(); } catch { /* ignore */ }
       }
     };
-
     recognition.start();
     recognitionRef.current = recognition;
   }, [isListening]);
@@ -216,50 +236,66 @@ const ChatInterface = ({
     }
   }, []);
 
-  // Toggle listening
   useEffect(() => {
-    if (isListening) {
-      startListening();
-    } else {
-      stopListening();
-    }
+    if (isListening) startListening();
+    else stopListening();
     return () => stopListening();
   }, [isListening, startListening, stopListening]);
 
-  const handleSendMessage = useCallback((text: string) => {
-    if (!text.trim() || isProcessing) return;
-    
-    const userMsg: Message = {
-      id: Date.now().toString(),
-      role: "user",
-      content: text.trim(),
-      timestamp: new Date(),
-    };
-    setMessages((prev) => [...prev, userMsg]);
-    setIsProcessing(true);
+  const handleSendMessage = useCallback(
+    (text: string) => {
+      if (!text.trim() || isProcessing) return;
 
-    // Generate and speak response
-    setTimeout(() => {
-      const response = getResponse(text);
+      const userMsg: Message = {
+        id: Date.now().toString(),
+        role: "user",
+        content: text.trim(),
+        timestamp: new Date(),
+      };
       const assistantMsg: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
-        content: response,
+        content: "",
         timestamp: new Date(),
       };
-      setMessages((prev) => [...prev, assistantMsg]);
-      setIsProcessing(false);
 
-      // Speak the response
-      if (voiceEnabled) {
-        speak(
-          response,
-          () => { setIsSpeaking(true); onSpeakingChange?.(true); },
-          () => { setIsSpeaking(false); onSpeakingChange?.(false); }
-        );
-      }
-    }, 800);
-  }, [isProcessing, voiceEnabled, onSpeakingChange]);
+      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      setIsProcessing(true);
+
+      const newHistory = [...chatHistory, { role: "user", content: text.trim() }];
+      let fullResponse = "";
+
+      streamChat({
+        messages: newHistory,
+        onDelta: (chunk) => {
+          fullResponse += chunk;
+          setMessages((prev) =>
+            prev.map((m) => (m.id === assistantMsg.id ? { ...m, content: fullResponse } : m))
+          );
+        },
+        onDone: () => {
+          setIsProcessing(false);
+          setChatHistory([...newHistory, { role: "assistant", content: fullResponse }]);
+          if (voiceEnabled && fullResponse) {
+            speak(
+              fullResponse,
+              () => { setIsSpeaking(true); onSpeakingChange?.(true); },
+              () => { setIsSpeaking(false); onSpeakingChange?.(false); }
+            );
+          }
+        },
+        onError: (err) => {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantMsg.id ? { ...m, content: `Apologies Boss, something went wrong: ${err}` } : m
+            )
+          );
+          setIsProcessing(false);
+        },
+      });
+    },
+    [isProcessing, voiceEnabled, onSpeakingChange, chatHistory]
+  );
 
   const handleSend = () => {
     handleSendMessage(input);
@@ -315,7 +351,7 @@ const ChatInterface = ({
             </div>
           )}
           {isProcessing && !isSpeaking && (
-            <span className="text-[10px] font-display tracking-wider text-muted-foreground animate-pulse">PROCESSING...</span>
+            <span className="text-[10px] font-display tracking-wider text-muted-foreground animate-pulse">THINKING...</span>
           )}
         </div>
         <button
@@ -335,10 +371,10 @@ const ChatInterface = ({
           <div
             key={msg.id}
             className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"} animate-fade-in-up`}
-            style={{ animationDelay: `${Math.min(i * 0.08, 0.4)}s` }}
+            style={{ animationDelay: `${Math.min(i * 0.05, 0.3)}s` }}
           >
             <div
-              className={`max-w-[80%] px-4 py-2.5 rounded-2xl text-sm leading-relaxed font-body ${
+              className={`max-w-[85%] px-4 py-2.5 rounded-2xl text-sm leading-relaxed font-body ${
                 msg.role === "user"
                   ? "bg-primary/20 border border-primary/30 text-foreground"
                   : "glass-surface text-foreground"
@@ -349,7 +385,13 @@ const ChatInterface = ({
                   M.A.X.Y
                 </span>
               )}
-              {msg.content}
+              {msg.content || (isProcessing && msg.role === "assistant" ? (
+                <span className="flex gap-1">
+                  {[0, 1, 2].map((i) => (
+                    <span key={i} className="w-1.5 h-1.5 rounded-full bg-primary/50" style={{ animation: `typing-dot 1s ${i * 0.2}s ease-in-out infinite` }} />
+                  ))}
+                </span>
+              ) : null)}
             </div>
           </div>
         ))}
