@@ -50,18 +50,31 @@ async function streamChat({
   onDone: () => void;
   onError: (err: string) => void;
 }) {
-  const resp = await fetch(CHAT_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-    },
-    body: JSON.stringify({ messages }),
-  });
+  const maxRetries = 2;
+  let attempt = 0;
+  let resp: Response | null = null;
 
-  if (!resp.ok) {
-    const data = await resp.json().catch(() => ({}));
-    onError(data.error || `Error ${resp.status}`);
+  while (attempt <= maxRetries) {
+    resp = await fetch(CHAT_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+      },
+      body: JSON.stringify({ messages }),
+    });
+
+    if (resp.status === 429 && attempt < maxRetries) {
+      attempt++;
+      await new Promise((r) => setTimeout(r, 3000 * attempt)); // wait 3s, then 6s
+      continue;
+    }
+    break;
+  }
+
+  if (!resp || !resp.ok) {
+    const data = await resp?.json().catch(() => ({})) || {};
+    onError(data.error || `Error ${resp?.status}`);
     return;
   }
 
