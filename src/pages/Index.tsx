@@ -5,6 +5,7 @@ import StatusPanel from "@/components/StatusPanel";
 
 const Index = () => {
   const [isListening, setIsListening] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
 
   return (
     <div className="relative min-h-screen flex flex-col items-center overflow-hidden bg-background">
@@ -40,7 +41,7 @@ const Index = () => {
       <main className="relative z-10 flex-1 flex flex-col items-center justify-center gap-6 px-4 w-full max-w-4xl py-8">
         {/* Orb */}
         <div className="animate-fade-in-up animate-float" style={{ animationDelay: '0.1s' }}>
-          <JarvisOrb isListening={isListening} size={240} />
+          <JarvisOrb isListening={isListening || isSpeaking} size={240} />
         </div>
 
         {/* Greeting */}
@@ -58,7 +59,7 @@ const Index = () => {
 
         {/* Chat */}
         <div className="w-full max-w-lg animate-fade-in-up" style={{ animationDelay: '0.6s' }}>
-          <ChatInterface isListening={isListening} onToggleListen={() => setIsListening((v) => !v)} />
+          <ChatInterface isListening={isListening} onToggleListen={() => setIsListening((v) => !v)} onSpeakingChange={setIsSpeaking} />
         </div>
       </main>
 
