@@ -212,7 +212,7 @@ const ChatInterface = ({
     if (recognitionRef.current) recognitionRef.current.stop();
 
     const recognition = new SpeechRecognition();
-    recognition.continuous = false;
+    recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = "en-US";
     recognition.maxAlternatives = 1;
@@ -224,19 +224,22 @@ const ChatInterface = ({
       }
       setInput(transcript);
       if (event.results[event.results.length - 1].isFinal) {
-        handleSendMessage(transcript.trim());
+        handleSendRef.current(transcript.trim());
         setInput("");
       }
     };
-    recognition.onerror = () => onToggleListen();
+    recognition.onerror = (e: any) => {
+      console.error("Speech error:", e.error);
+      if (e.error !== "no-speech") onToggleListen();
+    };
     recognition.onend = () => {
-      if (isListening) {
+      if (isListeningRef.current) {
         try { recognition.start(); } catch { /* ignore */ }
       }
     };
     recognition.start();
     recognitionRef.current = recognition;
-  }, [isListening]);
+  }, [onToggleListen]);
 
   const stopListening = useCallback(() => {
     if (recognitionRef.current) {
