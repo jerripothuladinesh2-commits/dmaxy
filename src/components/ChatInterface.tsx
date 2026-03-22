@@ -156,6 +156,7 @@ const ChatInterface = ({
   const recognitionRef = useRef<any>(null);
   const hasGreeted = useRef(false);
   const isListeningRef = useRef(isListening);
+  const isSpeakingRef = useRef(false);
   const handleSendRef = useRef<(text: string) => void>(() => {});
 
   // Keep refs in sync
