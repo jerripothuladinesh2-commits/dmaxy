@@ -155,6 +155,11 @@ const ChatInterface = ({
   const scrollRef = useRef<HTMLDivElement>(null);
   const recognitionRef = useRef<any>(null);
   const hasGreeted = useRef(false);
+  const isListeningRef = useRef(isListening);
+  const handleSendRef = useRef<(text: string) => void>(() => {});
+
+  // Keep refs in sync
+  useEffect(() => { isListeningRef.current = isListening; }, [isListening]);
 
   useEffect(() => {
     if ("speechSynthesis" in window) {
