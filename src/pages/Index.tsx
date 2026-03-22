@@ -59,7 +59,7 @@ const Index = () => {
 
         {/* Chat */}
         <div className="w-full max-w-lg animate-fade-in-up" style={{ animationDelay: '0.6s' }}>
-          <ChatInterface isListening={isListening} onToggleListen={() => setIsListening((v) => !v)} />
+          <ChatInterface isListening={isListening} onToggleListen={() => setIsListening((v) => !v)} onSpeakingChange={setIsSpeaking} />
         </div>
       </main>
 
