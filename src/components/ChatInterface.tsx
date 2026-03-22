@@ -81,7 +81,7 @@ const ChatInterface = ({ isListening, onToggleListen }: { isListening: boolean; 
             >
               {msg.role === "assistant" && (
                 <span className="text-[10px] font-display tracking-widest text-primary/70 block mb-1">
-                  D.I.N.E.S.H AI
+                  M.A.X.Y
                 </span>
               )}
               {msg.content}

@@ -26,7 +26,7 @@ const Index = () => {
             <div className="w-3 h-3 rounded-full bg-primary" />
           </div>
           <div>
-            <h1 className="font-display text-sm tracking-widest text-foreground text-glow">D.I.N.E.S.H AI</h1>
+            <h1 className="font-display text-sm tracking-widest text-foreground text-glow">M.A.X.Y</h1>
             <p className="text-[10px] font-body text-muted-foreground tracking-wider">PERSONAL INTELLIGENCE SYSTEM</p>
           </div>
         </div>
@@ -65,7 +65,7 @@ const Index = () => {
       {/* Footer */}
       <footer className="relative z-10 pb-4 text-center">
         <p className="text-[10px] font-display tracking-[0.25em] text-muted-foreground/50">
-          DINESH AI • v1.0.0 • ALL RIGHTS RESERVED
+          MAXY • v1.0.0 • ALL RIGHTS RESERVED
         </p>
       </footer>
     </div>

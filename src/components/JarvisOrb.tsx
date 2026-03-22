@@ -93,7 +93,7 @@ const JarvisOrb = ({ isListening = false, size = 280 }: { isListening?: boolean;
       {/* Label */}
       <div className="absolute font-display text-[10px] tracking-[0.3em] uppercase text-muted-foreground"
         style={{ bottom: size * 0.05 }}>
-        D . I . N . E . S . H
+        M . A . X . Y
       </div>
     </div>
   );
